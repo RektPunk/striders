@@ -56,7 +56,7 @@ impl StrideExplainer {
                     l_vals[(0, j_idx)] = x[(row_idx, f_idx)];
                 }
 
-                // K_nm (N x m) & K_mm (m x m) 계산
+                // K_nm (N x m) & K_mm (m x m)
                 let mut k_nm = Mat::<f32>::zeros(n, self.m_landmarks);
                 let mut k_mm = Mat::<f32>::zeros(self.m_landmarks, self.m_landmarks);
 
