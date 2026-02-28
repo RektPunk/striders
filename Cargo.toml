@@ -1,0 +1,16 @@
+[package]
+name = "striders"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+name = "striders"
+crate-type = ["cdylib"]
+
+[dependencies]
+csv = "1.4.0"
+faer = "0.24.0"
+numpy = "0.28.0"
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py38"] }
+rand = "0.10.0"
+rayon = "1.11.0"
