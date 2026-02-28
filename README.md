@@ -30,7 +30,7 @@ pip install striders
 Reproducibility: You can reproduce these results by running the [**script**](https://github.com/RektPunk/strides/tree/main/examples/benchmark.py).
 
 ## Acknowledgments & Citations
-This is an unofficial implementation based on the principles described in:
+This is an **unofficial** implementation based on the principles described in:
 
 ```bibtex
 @article{ko2025stride,
@@ -45,9 +45,9 @@ If you find this implementation useful in your work, please consider citing this
 
 ```bibtex
 @software{striders2026,
-  author = {RektPunk},
-  title = {Striders: A High-Performance Rust-based Implementation of STRIDE},
-  year = {2026},
-  url = {https://github.com/RektPunk/striders},
+  author={RektPunk},
+  title={Striders: A High-Performance Rust-based Implementation of STRIDE},
+  year={2026},
+  url={https://github.com/RektPunk/striders},
 }
 ```
