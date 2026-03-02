@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "striders"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "csv",
  "faer",
