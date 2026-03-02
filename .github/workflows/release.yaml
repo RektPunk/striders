@@ -27,6 +27,7 @@ jobs:
         with:
           command: build
           args: --release --out dist
+          manylinux: auto
           sccache: 'true'
 
       - name: Upload wheels
