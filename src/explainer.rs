@@ -164,7 +164,7 @@ impl StrideExplainer {
 
         // Batch processing for each column
         for f_idx in 0..n_features {
-            // Batch Kernel: K_batch (N x n_feature_bases)
+            // Batch Kernel: K_batch (N x num_bases)
             let mut k_batch = Mat::<f32>::zeros(n_samples, self.num_bases);
             let bases = &self.feature_bases[f_idx]; // (1 x n feature_bases)
             for i in 0..n_samples {
