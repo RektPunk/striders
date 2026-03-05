@@ -20,14 +20,14 @@ pip install striders
 ## Performance Benchmarking
 | Dataset (Task) | Samples / Features | Metric | **TreeSHAP** | **Striders** | **Speed-up** |
 | --- | --- | --- | --- | --- | --- |
-| **CA Housing** (Reg.) | 20,640 / 8 | Execution Time | 6.4243s | **0.0784s** | **82.0x** 🚀 |
-|  |  | Fidelity ($R^2$) | - | **0.9093** |  |
-|  |  | Correlation | - | **0.9506** |  |
-| **Credit Default** (Clf.) | 30,000 / 23 | Execution Time | 13.7760s | **0.4027s** | **34.2x** 🚀 |
+| **CA Housing** (Reg.) | 20,640 / 8 | Execution Time | 22.1948s | **0.3927s** | **56.5x** 🚀 |
+|  |  | Fidelity ($R^2$) | - | **0.9081** |  |
+|  |  | Correlation | - | **0.9490** |  |
+| **Credit Default** (Clf.) | 30,000 / 23 | Execution Time | 47.0008s | **2.4718s** | **19.0x** 🚀 |
 |  |  | Fidelity ($R^2$) | - | **0.9776** |  |
-|  |  | Correlation | - | **0.9428** |  |
+|  |  | Correlation | - | **0.9429** |  |
 
-Reproducibility: You can reproduce these results by running the [**script**](https://github.com/RektPunk/strides/tree/main/examples/benchmark.py).
+Reproducibility: You can reproduce these results in [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/RektPunk/striders/blob/main/examples/benchmark.ipynb).
 
 ## Acknowledgments & Citations
 This is an **unofficial** implementation based on the principles described in:
