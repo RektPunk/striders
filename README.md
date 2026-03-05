@@ -27,7 +27,8 @@ pip install striders
 |  |  | Fidelity ($R^2$) | - | **0.9776** |  |
 |  |  | Correlation | - | **0.9429** |  |
 
-Reproducibility: You can reproduce these results in [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/RektPunk/striders/blob/main/examples/benchmark.ipynb).
+Reproducibility: You can run directly in:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/RektPunk/striders/blob/main/examples/benchmark.ipynb)
 
 ## Acknowledgments & Citations
 This is an **unofficial** implementation based on the principles described in:
