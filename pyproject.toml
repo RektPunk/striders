@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "striders"
-version = "0.0.3"
+version = "0.0.4"
 description = "Efficient surrogate-based model explanations (XAI) using landmark-based kernel approximations for scalable SHAP values."
 authors = [
     {name = "RektPunk", email = "rektpunk@gmail.com"},
