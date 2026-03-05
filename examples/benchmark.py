@@ -25,8 +25,8 @@ def benchmark(x, y_pred, model):
     print(f"TreeSHAP execution time: {tree_shap_time:.4f}s")
 
     # --- 2. Target: Striders (High-Performance Rust Engine) ---
-    # Parameters: m_landmarks (complexity), sigma (kernel width), lambda_reg (regularization)
-    strider_model = Striders(m_landmarks=50, sigma=1.0, lambda_reg=0.01)
+    # Parameters: num_bases (complexity), sigma (kernel width), lambda_reg (regularization)
+    strider_model = Striders(num_bases=50, sigma=1.0, lambda_reg=0.01)
 
     start_time = time.time()
     # Fit the surrogate model to the black-box predictions
