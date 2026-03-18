@@ -159,47 +159,52 @@ impl StrideExplainer {
         let n_features = x.ncols();
         let s2 = 2.0 * self.sigma * self.sigma;
 
+        let contributions_vec: Vec<Col<f32>> = (0..n_features)
+            .into_par_iter()
+            .map(|f_idx| {
+                // Batch Kernel: K_batch (N x num_bases)
+                let mut k_batch = Mat::<f32>::zeros(n_samples, self.num_bases);
+                let bases = &self.feature_bases[f_idx];
+                let proj = &self.proj_matrices[f_idx];
+                let mean = &self.feature_means[f_idx];
+                let coeff = &self.coefficients[f_idx];
+                for i in 0..n_samples {
+                    let x_val = x[(i, f_idx)];
+                    if !x_val.is_nan() {
+                        for j in 0..self.num_bases {
+                            let diff = x_val - bases[(0, j)];
+                            k_batch[(i, j)] = (-(diff * diff) / s2).exp();
+                        }
+                    }
+                }
+
+                // Batch Projection & Centering
+                // Z_batch = K_batch * projection_matrix - offset
+                let mut z_batch = k_batch * proj;
+                for i in 0..n_samples {
+                    if !x[(i, f_idx)].is_nan() {
+                        for j in 0..self.num_bases {
+                            z_batch[(i, j)] -= mean[j];
+                        }
+                    } else {
+                        for j in 0..self.num_bases {
+                            z_batch[(i, j)] = 0.0;
+                        }
+                    }
+                }
+                // Batch Contribution: stride = Z_batch * coefficient (N x 1) vector
+                z_batch * coeff // (N x 1)
+            })
+            .collect();
         // strides score (N x M)
-        let mut contributions = Mat::<f32>::zeros(n_samples, n_features);
+        let contributions =
+            Mat::<f32>::from_fn(n_samples, n_features, |i, j| contributions_vec[j][i]);
 
-        // Batch processing for each column
-        for f_idx in 0..n_features {
-            // Batch Kernel: K_batch (N x num_bases)
-            let mut k_batch = Mat::<f32>::zeros(n_samples, self.num_bases);
-            let bases = &self.feature_bases[f_idx]; // (1 x n feature_bases)
-            for i in 0..n_samples {
-                let x_val = x[(i, f_idx)];
-                if !x_val.is_nan() {
-                    for j in 0..self.num_bases {
-                        let diff = x_val - bases[(0, j)];
-                        k_batch[(i, j)] = (-(diff * diff) / s2).exp();
-                    }
-                }
-            }
-
-            // Batch Projection & Centering
-            // Z_batch = K_batch * projection_matrix - offset
-            let mut z_batch = &k_batch * &self.proj_matrices[f_idx];
-            for i in 0..n_samples {
-                if !x[(i, f_idx)].is_nan() {
-                    for j in 0..self.num_bases {
-                        z_batch[(i, j)] -= self.feature_means[f_idx][j];
-                    }
-                }
-            }
-
-            // Batch Contribution: stride = Z_batch * coefficient (N x 1) vector
-            let stride_col = &z_batch * &self.coefficients[f_idx];
-            for i in 0..n_samples {
-                contributions[(i, f_idx)] = stride_col[i];
-            }
-        }
-
-        // predictions = Base Value + sum of strides
-        let mut predictions = Col::<f32>::full(n_samples, self.base_value);
-        for i in 0..n_samples {
-            predictions[i] += (0..n_features).map(|j| contributions[(i, j)]).sum::<f32>();
-        }
+        // Predictions: // Base Value + sum of strides
+        let predictions = Col::<f32>::from_fn(n_samples, |i| {
+            let row_sum: f32 = (0..n_features).map(|j| contributions[(i, j)]).sum();
+            self.base_value + row_sum
+        });
         (predictions, contributions)
     }
 }
