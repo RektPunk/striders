@@ -1,7 +1,7 @@
 mod explainer;
 
 use crate::explainer::StrideExplainer;
-use faer::prelude::*;
+use faer::{Col, Mat};
 use numpy::ndarray::{Array1, Array2};
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, ToPyArray};
 use pyo3::prelude::*;
@@ -27,18 +27,8 @@ impl Striders {
 
         let n = x_view.shape()[0];
         let p = x_view.shape()[1];
-        let mut x_mat = Mat::<f32>::zeros(n, p);
-        for i in 0..n {
-            for j in 0..p {
-                x_mat[(i, j)] = x_view[[i, j]];
-            }
-        }
-
-        let mut y_col = Col::<f32>::zeros(n);
-        for i in 0..n {
-            y_col[i] = y_view[i];
-        }
-
+        let x_mat = Mat::<f32>::from_fn(n, p, |i, j| x_view[[i, j]]);
+        let y_col = Col::<f32>::from_fn(n, |i| y_view[i]);
         self.inner.fit(&x_mat, &y_col);
     }
 
@@ -49,26 +39,11 @@ impl Striders {
     ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray2<f32>>)> {
         let x_view = x.as_array();
         let (n, p) = (x_view.shape()[0], x_view.shape()[1]);
-        let mut x_mat = Mat::<f32>::zeros(n, p);
-        for i in 0..n {
-            for j in 0..p {
-                x_mat[(i, j)] = x_view[[i, j]];
-            }
-        }
+        let x_mat = Mat::<f32>::from_fn(n, p, |i, j| x_view[[i, j]]);
         let (pred, strides) = self.inner.explain(&x_mat);
-
-        let mut pred_ndarray = Array1::<f32>::zeros(n);
-        for i in 0..n {
-            pred_ndarray[i] = pred[i];
-        }
+        let pred_ndarray = Array1::<f32>::from_iter(pred.iter().cloned());
         let py_pred = pred_ndarray.to_pyarray(py);
-
-        let mut strides_ndarray = Array2::<f32>::zeros((n, p));
-        for i in 0..n {
-            for j in 0..p {
-                strides_ndarray[[i, j]] = strides[(i, j)];
-            }
-        }
+        let strides_ndarray = Array2::from_shape_fn((n, p), |(i, j)| strides[(i, j)]);
         let py_strides = strides_ndarray.to_pyarray(py);
         Ok((py_pred, py_strides))
     }
