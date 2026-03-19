@@ -40,7 +40,7 @@ impl StrideExplainer {
         let num_features = x.ncols();
         let base_value = pred.iter().sum::<f32>() / n as f32;
         let target_centered = pred - Col::<f32>::full(n, base_value);
-        let s2 = 2.0 * self.sigma * self.sigma;
+        let s2_inv = 1.0 / 2.0 * self.sigma * self.sigma;
 
         // Nystrom approximation
         let feature_params: Vec<_> = (0..num_features)
@@ -72,16 +72,20 @@ impl StrideExplainer {
                     if !x_val.is_nan() {
                         for j in 0..self.num_bases {
                             let diff = x_val - bases[(0, j)];
-                            k_nm[(i, j)] = (-(diff * diff) / s2).exp();
+                            k_nm[(i, j)] = (-(diff * diff) * s2_inv).exp();
                         }
                     }
                 }
 
                 let mut k_mm = Mat::<f32>::zeros(self.num_bases, self.num_bases);
                 for i in 0..self.num_bases {
-                    for j in 0..self.num_bases {
+                    for j in i..self.num_bases {
                         let diff = bases[(0, i)] - bases[(0, j)];
-                        k_mm[(i, j)] = (-(diff * diff) / s2).exp();
+                        let val = (-(diff * diff) * s2_inv).exp();
+                        k_mm[(i, j)] = val;
+                        if i != j {
+                            k_mm[(j, i)] = val;
+                        }
                     }
                 }
 
@@ -95,12 +99,12 @@ impl StrideExplainer {
                 let mut z_features = &k_nm * &proj_matrix;
                 let mut z_col_means = Col::<f32>::zeros(self.num_bases);
                 for j in 0..self.num_bases {
-                    let m = z_features.col(j).iter().sum::<f32>() / n as f32;
-                    z_col_means[j] = m;
+                    let mean_val = z_features.col(j).iter().sum::<f32>() / n as f32;
+                    z_col_means[j] = mean_val;
 
                     for i in 0..n {
                         if !x[(i, f_idx)].is_nan() {
-                            z_features[(i, j)] -= m;
+                            z_features[(i, j)] -= mean_val;
                         } else {
                             z_features[(i, j)] = 0.0;
                         }
@@ -196,15 +200,24 @@ impl StrideExplainer {
                 z_batch * coeff // (N x 1)
             })
             .collect();
-        // strides score (N x M)
-        let contributions =
-            Mat::<f32>::from_fn(n_samples, n_features, |i, j| contributions_vec[j][i]);
 
+        // strides score (N x M)
+        let mut contributions = Mat::<f32>::zeros(n_samples, n_features);
+        for j in 0..n_features {
+            let col_data = &contributions_vec[j];
+            for i in 0..n_samples {
+                contributions[(i, j)] = col_data[i];
+            }
+        }
         // Predictions: // Base Value + sum of strides
-        let predictions = Col::<f32>::from_fn(n_samples, |i| {
-            let row_sum: f32 = (0..n_features).map(|j| contributions[(i, j)]).sum();
-            self.base_value + row_sum
-        });
+        let mut predictions = Col::<f32>::full(n_samples, self.base_value);
+        for i in 0..n_samples {
+            let mut row_sum = 0.0;
+            for j in 0..n_features {
+                row_sum += contributions[(i, j)];
+            }
+            predictions[i] += row_sum;
+        }
         (predictions, contributions)
     }
 }
