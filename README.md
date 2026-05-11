@@ -1,14 +1,6 @@
 <div style="text-align: center;">
   <img src="https://capsule-render.vercel.app/api?type=transparent&height=300&color=gradient&text=striders&section=header&reversal=false&height=120&fontSize=90&fontColor=ff5500">
 </div>
-<p align="center">
-  <a href="https://github.com/RektPunk/striders/releases/latest">
-    <img alt="release" src="https://img.shields.io/github/v/release/RektPunk/striders.svg">
-  </a>
-  <a href="https://github.com/RektPunk/striders/blob/main/LICENSE">
-    <img alt="License" src="https://img.shields.io/github/license/RektPunk/striders.svg">
-  </a>
-</p>
 
 **Striders** is a lightning-fast, surrogate-based model explanations (XAI). It provides an efficient alternative to traditional SHAP by leveraging landmark-based kernel approximations. Striders implements a landmark-based approximation of the Shapley Kernel. By selecting representative landmarks, it reduces the complexity of the explanation process while maintaining high correlation with the true Shapley values.
 
