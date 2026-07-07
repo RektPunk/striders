@@ -1,11 +1,11 @@
 [package]
 name = "striders"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2024"
 
 [lib]
 name = "striders"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 csv = "1.4.0"

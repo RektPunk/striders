@@ -30,3 +30,4 @@ __pycache__/
 dist/
 .venv
 .DS_Store
+.ruff_cache
