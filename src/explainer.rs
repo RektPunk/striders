@@ -19,9 +19,7 @@ pub struct StrideExplainer {
 }
 
 struct NystromWorkspace {
-    bases: Col<f32>,
     proj: Mat<f32>,
-    mean: Col<f32>,
 }
 
 #[inline]
@@ -73,12 +71,15 @@ impl StrideExplainer {
 
         let total_dim = num_features * self.num_bases;
         let mut z_stacked = Mat::<f32>::zeros(n, total_dim);
-
+        self.bases = Mat::<f32>::zeros(self.num_bases, num_features);
+        let mut means = Mat::<f32>::zeros(self.num_bases, num_features);
         // Nystrom approximation
         let workspace: Vec<NystromWorkspace> = z_stacked
             .par_col_partition_mut(num_features)
+            .zip(self.bases.par_col_partition_mut(num_features))
+            .zip(means.par_col_partition_mut(num_features))
             .enumerate()
-            .map(|(f_idx, mut z_block)| {
+            .map(|(f_idx, ((mut z_block, base_col), mean_col))| {
                 let mut rng = rng();
                 let mut valid_indices: Vec<usize> =
                     (0..n).filter(|&i| !x[(i, f_idx)].is_nan()).collect();
@@ -94,15 +95,15 @@ impl StrideExplainer {
                 valid_indices.shuffle(&mut rng);
                 let landmark_indices = &valid_indices[..self.num_bases.min(valid_indices.len())];
 
-                let mut bases = Col::<f32>::zeros(self.num_bases);
+                let mut basis = base_col.col_mut(0);
                 for (j_idx, &row_idx) in landmark_indices.iter().enumerate() {
-                    bases[j_idx] = x[(row_idx, f_idx)];
+                    basis[j_idx] = x[(row_idx, f_idx)];
                 }
 
                 // K_nm (N x m)
                 let mut k_nm = Mat::<f32>::zeros(n, self.num_bases);
                 for j in 0..self.num_bases {
-                    let base_val = bases[j];
+                    let base_val = basis[j];
                     for i in 0..n {
                         let x_val = x[(i, f_idx)];
                         if !x_val.is_nan() {
@@ -116,7 +117,7 @@ impl StrideExplainer {
                 let mut k_mm = Mat::<f32>::zeros(self.num_bases, self.num_bases);
                 for j in 0..self.num_bases {
                     for i in 0..=j {
-                        let diff = bases[i] - bases[j];
+                        let diff = basis[i] - basis[j];
                         let val = rbf_kernel(diff, s2_inv);
                         k_mm[(i, j)] = val;
                         if i != j {
@@ -134,7 +135,7 @@ impl StrideExplainer {
                 let proj = eig.U() * &inv_s;
                 let mut z_features = &k_nm * &proj;
 
-                let mut mean = Col::<f32>::zeros(self.num_bases);
+                let mut mean = mean_col.col_mut(0);
                 for j in 0..self.num_bases {
                     let mean_val = z_features.col(j).iter().sum::<f32>() / n as f32;
                     mean[j] = mean_val;
@@ -148,8 +149,7 @@ impl StrideExplainer {
                     }
                 }
                 z_block.copy_from(&z_features);
-
-                NystromWorkspace { bases, proj, mean }
+                NystromWorkspace { proj }
             })
             .collect();
 
@@ -161,17 +161,20 @@ impl StrideExplainer {
         let rhs = z_stacked.transpose() * &target_centered;
         let alpha_total = ridge_lhs.ldlt(faer::Side::Lower).unwrap().solve(&rhs);
 
-        self.bases = Mat::zeros(self.num_bases, num_features);
         self.weights = Mat::zeros(self.num_bases, num_features);
         self.offsets = Col::zeros(num_features);
 
-        for (f_idx, ws) in workspace.iter().enumerate().take(num_features) {
+        for (f_idx, (ws, mean)) in workspace
+            .iter()
+            .zip(means.col_iter())
+            .enumerate()
+            .take(num_features)
+        {
             let start = f_idx * self.num_bases;
             let coeff = alpha_total.as_ref().subrows(start, self.num_bases);
             let weight = &ws.proj * coeff;
             self.weights.col_mut(f_idx).copy_from(weight);
-            self.offsets[f_idx] = ws.mean.transpose() * coeff;
-            self.bases.col_mut(f_idx).copy_from(&ws.bases);
+            self.offsets[f_idx] = mean.transpose() * coeff;
         }
 
         self.base_value = base_value;
