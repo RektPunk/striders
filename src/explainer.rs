@@ -40,7 +40,7 @@ impl StrideExplainer {
         let s2_inv = 0.5 / (self.sigma * self.sigma);
 
         // Nystrom approximation
-        let feature_params: Vec<_> = (0..num_features)
+        let params: Vec<_> = (0..num_features)
             .into_par_iter()
             .map(|f_idx| {
                 let mut rng = rng();
@@ -118,7 +118,7 @@ impl StrideExplainer {
         // Global Ridge Regression
         let total_dim = num_features * self.num_bases;
         let mut z_stacked = Mat::<f32>::zeros(n, total_dim);
-        for (f_idx, (_, _, z, _)) in feature_params.iter().enumerate() {
+        for (f_idx, (_, _, z, _)) in params.iter().enumerate() {
             let offset = f_idx * self.num_bases;
             z_stacked
                 .as_mut()
@@ -137,10 +137,9 @@ impl StrideExplainer {
         self.feature_weights = Vec::with_capacity(num_features);
         self.feature_offsets = Vec::with_capacity(num_features);
 
-        for f_idx in 0..num_features {
+        for (f_idx, (bases, proj, _, mean)) in params.iter().enumerate().take(num_features) {
             let start = f_idx * self.num_bases;
             let coeff = alpha_total.as_ref().subrows(start, self.num_bases);
-            let (bases, proj, _, mean) = &feature_params[f_idx];
 
             let w_col = proj * coeff; // W = P * alpha
             let w_vec: Vec<f32> = (0..self.num_bases).map(|j| w_col[j]).collect();
