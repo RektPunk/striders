@@ -12,14 +12,14 @@ pub struct StrideExplainer {
 
     // Learned Parameters
     pub base_value: f32,
-    pub feature_bases: Vec<Vec<f32>>,
-    pub feature_weights: Vec<Vec<f32>>, // W = P * alpha
-    pub feature_offsets: Vec<f32>,      // C = mean * alpha
+    pub feature_bases: Mat<f32>,   // (num_features × num_bases)
+    pub feature_weights: Mat<f32>, // (num_features × num_bases)
+    pub feature_offsets: Col<f32>, // (num_features)
     pub is_fitted: bool,
 }
 
 struct ParamWorkspace {
-    bases: Vec<f32>,
+    bases: Col<f32>,
     proj: Mat<f32>,
     mean: Col<f32>,
 }
@@ -31,9 +31,9 @@ impl StrideExplainer {
             lambda,
             sigma,
             base_value: 0.0,
-            feature_bases: Vec::new(),
-            feature_weights: Vec::new(),
-            feature_offsets: Vec::new(),
+            feature_bases: Mat::zeros(0, 0),
+            feature_weights: Mat::zeros(0, 0),
+            feature_offsets: Col::zeros(0),
             is_fitted: false,
         }
     }
@@ -68,7 +68,7 @@ impl StrideExplainer {
                 valid_indices.shuffle(&mut rng);
                 let landmark_indices = &valid_indices[..self.num_bases.min(valid_indices.len())];
 
-                let mut bases = vec![0.0; self.num_bases];
+                let mut bases = Col::<f32>::zeros(self.num_bases);
                 for (j_idx, &row_idx) in landmark_indices.iter().enumerate() {
                     bases[j_idx] = x[(row_idx, f_idx)];
                 }
@@ -122,6 +122,7 @@ impl StrideExplainer {
                     }
                 }
                 z_block.copy_from(&z_features);
+
                 ParamWorkspace {
                     bases: bases,
                     proj: proj_matrix,
@@ -138,25 +139,27 @@ impl StrideExplainer {
         let rhs = z_stacked.transpose() * &target_centered;
         let alpha_total = ridge_lhs.ldlt(faer::Side::Lower).unwrap().solve(&rhs);
 
-        self.feature_bases = Vec::with_capacity(num_features);
-        self.feature_weights = Vec::with_capacity(num_features);
-        self.feature_offsets = Vec::with_capacity(num_features);
+        self.feature_bases = Mat::zeros(num_features, self.num_bases);
+        self.feature_weights = Mat::zeros(num_features, self.num_bases);
+        self.feature_offsets = Col::zeros(num_features);
 
         for (f_idx, ws) in workspace.iter().enumerate().take(num_features) {
             let start = f_idx * self.num_bases;
             let coeff = alpha_total.as_ref().subrows(start, self.num_bases);
 
             let w_col = &ws.proj * coeff; // W = P * alpha
-            let w_vec: Vec<f32> = (0..self.num_bases).map(|j| w_col[j]).collect();
+            let mut row = self.feature_weights.row_mut(f_idx);
+            for j in 0..self.num_bases {
+                row[j] = w_col[j];
+            }
 
             let mut c = 0.0;
             for j in 0..self.num_bases {
                 c += &ws.mean[j] * coeff[j]; // C = mean * alpha
+                self.feature_bases[(f_idx, j)] = ws.bases[j];
             }
 
-            self.feature_bases.push(ws.bases.to_owned());
-            self.feature_weights.push(w_vec);
-            self.feature_offsets.push(c);
+            self.feature_offsets[f_idx] = c;
         }
 
         self.base_value = base_value;
@@ -178,14 +181,14 @@ impl StrideExplainer {
                 for f_idx in 0..n_features {
                     let x_val = x[(i, f_idx)];
                     if !x_val.is_nan() {
-                        let bases = &self.feature_bases[f_idx];
-                        let weights = &self.feature_weights[f_idx];
+                        let bases = self.feature_bases.row(f_idx);
+                        let weights = self.feature_weights.row(f_idx);
                         let offset = self.feature_offsets[f_idx];
 
                         let mut sum = 0.0;
-                        for j in 0..self.num_bases {
-                            let diff = x_val - bases[j];
-                            sum += (-(diff * diff) * s2_inv).exp() * weights[j];
+                        for (base, weight) in bases.iter().zip(weights.iter()) {
+                            let diff = x_val - *base;
+                            sum += (-(diff * diff) * s2_inv).exp() * *weight;
                         }
                         sample_sum += sum - offset;
                     }
@@ -207,8 +210,8 @@ impl StrideExplainer {
             .par_col_partition_mut(n_features)
             .enumerate()
             .for_each(|(f_idx, mut contribs)| {
-                let bases = &self.feature_bases[f_idx];
-                let weights = &self.feature_weights[f_idx];
+                let bases = self.feature_bases.row(f_idx);
+                let weights = self.feature_weights.row(f_idx);
                 let offset = self.feature_offsets[f_idx];
 
                 for i in 0..n_samples {
@@ -217,9 +220,9 @@ impl StrideExplainer {
                         contribs[(i, 0)] = 0.0;
                     } else {
                         let mut sum = 0.0;
-                        for j in 0..self.num_bases {
-                            let diff = x_val - bases[j];
-                            sum += (-(diff * diff) * s2_inv).exp() * weights[j];
+                        for (base, weight) in bases.iter().zip(weights.iter()) {
+                            let diff = x_val - *base;
+                            sum += (-(diff * diff) * s2_inv).exp() * *weight;
                         }
                         contribs[(i, 0)] = sum - offset;
                     }
