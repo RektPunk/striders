@@ -12,16 +12,37 @@ pub struct StrideExplainer {
 
     // Learned Parameters
     pub base_value: f32,
-    pub feature_bases: Mat<f32>,   // (num_features × num_bases)
-    pub feature_weights: Mat<f32>, // (num_features × num_bases)
-    pub feature_offsets: Col<f32>, // (num_features)
+    pub bases: Mat<f32>,
+    pub weights: Mat<f32>,
+    pub offsets: Col<f32>,
     pub is_fitted: bool,
 }
 
-struct ParamWorkspace {
+struct NystromWorkspace {
     bases: Col<f32>,
     proj: Mat<f32>,
     mean: Col<f32>,
+}
+
+#[inline]
+fn rbf_kernel(diff: f32, s2_inv: f32) -> f32 {
+    (-(diff * diff) * s2_inv).exp()
+}
+
+#[inline]
+fn evaluate_feature(
+    x: f32,
+    bases: ColRef<'_, f32>,
+    weights: ColRef<'_, f32>,
+    offset: f32,
+    s2_inv: f32,
+) -> f32 {
+    let mut sum = 0.0;
+    for (base, weight) in bases.iter().zip(weights.iter()) {
+        sum += rbf_kernel(x - *base, s2_inv) * *weight;
+    }
+
+    sum - offset
 }
 
 impl StrideExplainer {
@@ -31,11 +52,16 @@ impl StrideExplainer {
             lambda,
             sigma,
             base_value: 0.0,
-            feature_bases: Mat::zeros(0, 0),
-            feature_weights: Mat::zeros(0, 0),
-            feature_offsets: Col::zeros(0),
+            bases: Mat::zeros(0, 0),
+            weights: Mat::zeros(0, 0),
+            offsets: Col::zeros(0),
             is_fitted: false,
         }
+    }
+
+    #[inline]
+    fn kernel_scale(&self) -> f32 {
+        0.5 / (self.sigma * self.sigma)
     }
 
     pub fn fit(&mut self, x: MatRef<'_, f32>, pred: ColRef<'_, f32>) {
@@ -43,13 +69,13 @@ impl StrideExplainer {
         let num_features = x.ncols();
         let base_value = pred.iter().sum::<f32>() / n as f32;
         let target_centered = pred - Col::<f32>::full(n, base_value);
-        let s2_inv = 0.5 / (self.sigma * self.sigma);
+        let s2_inv = self.kernel_scale();
 
         let total_dim = num_features * self.num_bases;
         let mut z_stacked = Mat::<f32>::zeros(n, total_dim);
 
         // Nystrom approximation
-        let workspace: Vec<ParamWorkspace> = z_stacked
+        let workspace: Vec<NystromWorkspace> = z_stacked
             .par_col_partition_mut(num_features)
             .enumerate()
             .map(|(f_idx, mut z_block)| {
@@ -81,7 +107,7 @@ impl StrideExplainer {
                         let x_val = x[(i, f_idx)];
                         if !x_val.is_nan() {
                             let diff = x_val - base_val;
-                            k_nm[(i, j)] = (-(diff * diff) * s2_inv).exp();
+                            k_nm[(i, j)] = rbf_kernel(diff, s2_inv);
                         }
                     }
                 }
@@ -91,7 +117,7 @@ impl StrideExplainer {
                 for j in 0..self.num_bases {
                     for i in 0..=j {
                         let diff = bases[i] - bases[j];
-                        let val = (-(diff * diff) * s2_inv).exp();
+                        let val = rbf_kernel(diff, s2_inv);
                         k_mm[(i, j)] = val;
                         if i != j {
                             k_mm[(j, i)] = val;
@@ -105,13 +131,13 @@ impl StrideExplainer {
                     let val = eig.S()[d];
                     inv_s[(d, d)] = if val > 1e-10 { 1.0 / val.sqrt() } else { 0.0 };
                 }
-                let proj_matrix = eig.U() * &inv_s;
-                let mut z_features = &k_nm * &proj_matrix;
+                let proj = eig.U() * &inv_s;
+                let mut z_features = &k_nm * &proj;
 
-                let mut z_col_means = Col::<f32>::zeros(self.num_bases);
+                let mut mean = Col::<f32>::zeros(self.num_bases);
                 for j in 0..self.num_bases {
                     let mean_val = z_features.col(j).iter().sum::<f32>() / n as f32;
-                    z_col_means[j] = mean_val;
+                    mean[j] = mean_val;
 
                     for i in 0..n {
                         if !x[(i, f_idx)].is_nan() {
@@ -123,11 +149,7 @@ impl StrideExplainer {
                 }
                 z_block.copy_from(&z_features);
 
-                ParamWorkspace {
-                    bases: bases,
-                    proj: proj_matrix,
-                    mean: z_col_means,
-                }
+                NystromWorkspace { bases, proj, mean }
             })
             .collect();
 
@@ -139,27 +161,17 @@ impl StrideExplainer {
         let rhs = z_stacked.transpose() * &target_centered;
         let alpha_total = ridge_lhs.ldlt(faer::Side::Lower).unwrap().solve(&rhs);
 
-        self.feature_bases = Mat::zeros(num_features, self.num_bases);
-        self.feature_weights = Mat::zeros(num_features, self.num_bases);
-        self.feature_offsets = Col::zeros(num_features);
+        self.bases = Mat::zeros(self.num_bases, num_features);
+        self.weights = Mat::zeros(self.num_bases, num_features);
+        self.offsets = Col::zeros(num_features);
 
         for (f_idx, ws) in workspace.iter().enumerate().take(num_features) {
             let start = f_idx * self.num_bases;
             let coeff = alpha_total.as_ref().subrows(start, self.num_bases);
-
-            let w_col = &ws.proj * coeff; // W = P * alpha
-            let mut row = self.feature_weights.row_mut(f_idx);
-            for j in 0..self.num_bases {
-                row[j] = w_col[j];
-            }
-
-            let mut c = 0.0;
-            for j in 0..self.num_bases {
-                c += &ws.mean[j] * coeff[j]; // C = mean * alpha
-                self.feature_bases[(f_idx, j)] = ws.bases[j];
-            }
-
-            self.feature_offsets[f_idx] = c;
+            let weight = &ws.proj * coeff;
+            self.weights.col_mut(f_idx).copy_from(weight);
+            self.offsets[f_idx] = ws.mean.transpose() * coeff;
+            self.bases.col_mut(f_idx).copy_from(&ws.bases);
         }
 
         self.base_value = base_value;
@@ -169,7 +181,7 @@ impl StrideExplainer {
     pub fn predict(&self, x: MatRef<'_, f32>) -> Col<f32> {
         let n_samples = x.nrows();
         let n_features = x.ncols();
-        let s2_inv = 0.5 / (self.sigma * self.sigma);
+        let s2_inv = self.kernel_scale();
 
         let mut predictions = Col::<f32>::full(n_samples, self.base_value);
         predictions
@@ -179,18 +191,12 @@ impl StrideExplainer {
             .for_each(|(i, pred_val)| {
                 let mut sample_sum = 0.0;
                 for f_idx in 0..n_features {
+                    let basis = self.bases.col(f_idx);
+                    let weight = self.weights.col(f_idx);
+                    let offset = self.offsets[f_idx];
                     let x_val = x[(i, f_idx)];
                     if !x_val.is_nan() {
-                        let bases = self.feature_bases.row(f_idx);
-                        let weights = self.feature_weights.row(f_idx);
-                        let offset = self.feature_offsets[f_idx];
-
-                        let mut sum = 0.0;
-                        for (base, weight) in bases.iter().zip(weights.iter()) {
-                            let diff = x_val - *base;
-                            sum += (-(diff * diff) * s2_inv).exp() * *weight;
-                        }
-                        sample_sum += sum - offset;
+                        sample_sum += evaluate_feature(x_val, basis, weight, offset, s2_inv);
                     }
                 }
                 *pred_val += sample_sum;
@@ -202,7 +208,7 @@ impl StrideExplainer {
     pub fn explain(&self, x: MatRef<f32>) -> Mat<f32> {
         let n_samples = x.nrows();
         let n_features = x.ncols();
-        let s2_inv = 0.5 / (self.sigma * self.sigma);
+        let s2_inv = self.kernel_scale();
 
         let mut contributions = Mat::<f32>::zeros(n_samples, n_features);
         contributions
@@ -210,21 +216,15 @@ impl StrideExplainer {
             .par_col_partition_mut(n_features)
             .enumerate()
             .for_each(|(f_idx, mut contribs)| {
-                let bases = self.feature_bases.row(f_idx);
-                let weights = self.feature_weights.row(f_idx);
-                let offset = self.feature_offsets[f_idx];
-
+                let basis = self.bases.col(f_idx);
+                let weight = self.weights.col(f_idx);
+                let offset = self.offsets[f_idx];
                 for i in 0..n_samples {
                     let x_val = x[(i, f_idx)];
                     if x_val.is_nan() {
                         contribs[(i, 0)] = 0.0;
                     } else {
-                        let mut sum = 0.0;
-                        for (base, weight) in bases.iter().zip(weights.iter()) {
-                            let diff = x_val - *base;
-                            sum += (-(diff * diff) * s2_inv).exp() * *weight;
-                        }
-                        contribs[(i, 0)] = sum - offset;
+                        contribs[(i, 0)] = evaluate_feature(x_val, basis, weight, offset, s2_inv);
                     }
                 }
             });
