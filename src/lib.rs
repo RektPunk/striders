@@ -73,8 +73,6 @@ impl<'a, T> IntoNdarray for ColRef<'a, T> {
     }
 }
 
-type ExplainResult<'py> = PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray2<f32>>)>;
-
 #[pyclass]
 pub struct Striders {
     inner: StrideExplainer,
@@ -96,16 +94,26 @@ impl Striders {
         self.inner.fit(x_mat, y_col);
     }
 
+    pub fn predict<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'_, f32>,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        let x_mat = x.into_faer();
+        let pred = self.inner.predict(x_mat);
+        let py_pred = pred.as_ref().into_ndarray().to_pyarray(py);
+        Ok(py_pred)
+    }
+
     pub fn explain<'py>(
         &self,
         py: Python<'py>,
         x: PyReadonlyArray2<'_, f32>,
-    ) -> ExplainResult<'py> {
+    ) -> PyResult<Bound<'py, PyArray2<f32>>> {
         let x_mat = x.into_faer();
-        let (pred, strides) = self.inner.explain(x_mat);
-        let py_pred = pred.as_ref().into_ndarray().to_pyarray(py);
+        let strides = self.inner.explain(x_mat);
         let py_strides = strides.as_ref().into_ndarray().to_pyarray(py);
-        Ok((py_pred, py_strides))
+        Ok(py_strides)
     }
 }
 

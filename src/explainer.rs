@@ -11,13 +11,10 @@ pub struct StrideExplainer {
     pub sigma: f32,
 
     // Learned Parameters
-    pub base_value: f32,              // E[f(X)]
-    pub feature_bases: Vec<Mat<f32>>, // samples
-    pub coefficients: Vec<Col<f32>>,  // weight w.r.t. samples (Alpha)
-
-    // Projection Components
-    pub proj_matrices: Vec<Mat<f32>>, // inv_sqrt_eigen
-    pub feature_means: Vec<Col<f32>>, // z_means
+    pub base_value: f32,
+    pub feature_bases: Vec<Vec<f32>>,
+    pub feature_weights: Vec<Vec<f32>>, // W = P * alpha
+    pub feature_offsets: Vec<f32>,      // C = mean * alpha
     pub is_fitted: bool,
 }
 
@@ -29,9 +26,8 @@ impl StrideExplainer {
             sigma,
             base_value: 0.0,
             feature_bases: Vec::new(),
-            coefficients: Vec::new(),
-            proj_matrices: Vec::new(),
-            feature_means: Vec::new(),
+            feature_weights: Vec::new(),
+            feature_offsets: Vec::new(),
             is_fitted: false,
         }
     }
@@ -61,15 +57,16 @@ impl StrideExplainer {
 
                 valid_indices.shuffle(&mut rng);
                 let landmark_indices = &valid_indices[..self.num_bases.min(valid_indices.len())];
-                let mut bases = Mat::<f32>::zeros(1, self.num_bases);
+
+                let mut bases = vec![0.0; self.num_bases];
                 for (j_idx, &row_idx) in landmark_indices.iter().enumerate() {
-                    bases[(0, j_idx)] = x[(row_idx, f_idx)];
+                    bases[j_idx] = x[(row_idx, f_idx)];
                 }
 
                 // K_nm (N x m)
                 let mut k_nm = Mat::<f32>::zeros(n, self.num_bases);
                 for j in 0..self.num_bases {
-                    let base_val = bases[(0, j)];
+                    let base_val = bases[j];
                     for i in 0..n {
                         let x_val = x[(i, f_idx)];
                         if !x_val.is_nan() {
@@ -83,7 +80,7 @@ impl StrideExplainer {
                 let mut k_mm = Mat::<f32>::zeros(self.num_bases, self.num_bases);
                 for j in 0..self.num_bases {
                     for i in 0..=j {
-                        let diff = bases[(0, i)] - bases[(0, j)];
+                        let diff = bases[i] - bases[j];
                         let val = (-(diff * diff) * s2_inv).exp();
                         k_mm[(i, j)] = val;
                         if i != j {
@@ -118,19 +115,10 @@ impl StrideExplainer {
             })
             .collect();
 
-        // Save for explain
-        let mut z_matrices = Vec::with_capacity(num_features);
-        for (b, p, z, o) in feature_params {
-            self.feature_bases.push(b);
-            self.proj_matrices.push(p);
-            z_matrices.push(z);
-            self.feature_means.push(o);
-        }
-
         // Global Ridge Regression
         let total_dim = num_features * self.num_bases;
         let mut z_stacked = Mat::<f32>::zeros(n, total_dim);
-        for (f_idx, z) in z_matrices.iter().enumerate() {
+        for (f_idx, (_, _, z, _)) in feature_params.iter().enumerate() {
             let offset = f_idx * self.num_bases;
             z_stacked
                 .as_mut()
@@ -138,83 +126,102 @@ impl StrideExplainer {
                 .copy_from(z);
         }
 
-        let lhs = z_stacked.transpose() * &z_stacked;
-        let mut ridge_lhs = lhs;
+        let mut ridge_lhs = z_stacked.transpose() * &z_stacked;
         for i in 0..total_dim {
             ridge_lhs[(i, i)] += self.lambda;
         }
         let rhs = z_stacked.transpose() * &target_centered;
         let alpha_total = ridge_lhs.ldlt(faer::Side::Lower).unwrap().solve(&rhs);
 
-        // Coefficients
-        let coefficients: Vec<Col<f32>> = (0..num_features)
-            .map(|f_idx| {
-                let start = f_idx * self.num_bases;
-                alpha_total
-                    .as_ref()
-                    .subrows(start, self.num_bases)
-                    .to_owned()
-            })
-            .collect();
+        self.feature_bases = Vec::with_capacity(num_features);
+        self.feature_weights = Vec::with_capacity(num_features);
+        self.feature_offsets = Vec::with_capacity(num_features);
+
+        for f_idx in 0..num_features {
+            let start = f_idx * self.num_bases;
+            let coeff = alpha_total.as_ref().subrows(start, self.num_bases);
+            let (bases, proj, _, mean) = &feature_params[f_idx];
+
+            let w_col = proj * coeff; // W = P * alpha
+            let w_vec: Vec<f32> = (0..self.num_bases).map(|j| w_col[j]).collect();
+
+            let mut c = 0.0;
+            for j in 0..self.num_bases {
+                c += mean[j] * coeff[j]; // C = mean * alpha
+            }
+
+            self.feature_bases.push(bases.to_owned());
+            self.feature_weights.push(w_vec);
+            self.feature_offsets.push(c);
+        }
 
         self.base_value = base_value;
-        self.coefficients = coefficients;
         self.is_fitted = true;
     }
 
-    pub fn explain(&self, x: MatRef<f32>) -> (Col<f32>, Mat<f32>) {
+    pub fn predict(&self, x: MatRef<'_, f32>) -> Col<f32> {
         let n_samples = x.nrows();
         let n_features = x.ncols();
-        let s2 = 2.0 * self.sigma * self.sigma;
+        let s2_inv = 0.5 / (self.sigma * self.sigma);
+
+        let mut predictions = Col::<f32>::full(n_samples, self.base_value);
+        predictions
+            .as_mut()
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, pred_val)| {
+                let mut sample_sum = 0.0;
+                for f_idx in 0..n_features {
+                    let x_val = x[(i, f_idx)];
+                    if !x_val.is_nan() {
+                        let bases = &self.feature_bases[f_idx];
+                        let weights = &self.feature_weights[f_idx];
+                        let offset = self.feature_offsets[f_idx];
+
+                        let mut sum = 0.0;
+                        for j in 0..self.num_bases {
+                            let diff = x_val - bases[j];
+                            sum += (-(diff * diff) * s2_inv).exp() * weights[j];
+                        }
+                        sample_sum += sum - offset;
+                    }
+                }
+                *pred_val += sample_sum;
+            });
+
+        predictions
+    }
+
+    pub fn explain(&self, x: MatRef<f32>) -> Mat<f32> {
+        let n_samples = x.nrows();
+        let n_features = x.ncols();
+        let s2_inv = 0.5 / (self.sigma * self.sigma);
 
         let mut contributions = Mat::<f32>::zeros(n_samples, n_features);
         contributions
             .as_mut()
             .par_col_partition_mut(n_features)
             .enumerate()
-            .for_each(|(f_idx, contribs)| {
-                // Batch Kernel: K_batch (N x num_bases)
-                let mut k_batch = Mat::<f32>::zeros(n_samples, self.num_bases);
+            .for_each(|(f_idx, mut contribs)| {
                 let bases = &self.feature_bases[f_idx];
-                let proj = &self.proj_matrices[f_idx];
-                let mean = &self.feature_means[f_idx];
-                let coeff = &self.coefficients[f_idx];
-                for j in 0..self.num_bases {
-                    let base_val = bases[(0, j)];
-                    for i in 0..n_samples {
-                        let x_val = x[(i, f_idx)];
-                        if !x_val.is_nan() {
-                            let diff = x_val - base_val;
-                            k_batch[(i, j)] = (-(diff * diff) / s2).exp();
-                        }
-                    }
-                }
+                let weights = &self.feature_weights[f_idx];
+                let offset = self.feature_offsets[f_idx];
 
-                // Batch Projection & Centering
-                // Z_batch = K_batch * projection_matrix - offset
-                let mut z_batch = k_batch * proj;
-                for j in 0..self.num_bases {
-                    let mean_val = mean[j];
-                    for i in 0..n_samples {
-                        if !x[(i, f_idx)].is_nan() {
-                            z_batch[(i, j)] -= mean_val;
-                        } else {
-                            z_batch[(i, j)] = 0.0;
+                for i in 0..n_samples {
+                    let x_val = x[(i, f_idx)];
+                    if x_val.is_nan() {
+                        contribs[(i, 0)] = 0.0;
+                    } else {
+                        let mut sum = 0.0;
+                        for j in 0..self.num_bases {
+                            let diff = x_val - bases[j];
+                            sum += (-(diff * diff) * s2_inv).exp() * weights[j];
                         }
+                        contribs[(i, 0)] = sum - offset;
                     }
                 }
-                // Batch Contribution: stride = Z_batch * coefficient (N x 1) vector
-                contribs.col_mut(0).copy_from(&z_batch * coeff);
             });
 
-        // Predictions: // Base Value + sum of strides
-        let mut predictions = Col::<f32>::full(n_samples, self.base_value);
-        for j in 0..n_features {
-            let col = contributions.col(j);
-            for i in 0..n_samples {
-                predictions[i] += col[i];
-            }
-        }
-        (predictions, contributions)
+        contributions
     }
 }
