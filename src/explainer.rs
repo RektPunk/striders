@@ -15,11 +15,6 @@ pub struct StrideExplainer {
     pub bases: Mat<f32>,
     pub weights: Mat<f32>,
     pub offsets: Col<f32>,
-    pub is_fitted: bool,
-}
-
-struct NystromWorkspace {
-    proj: Mat<f32>,
 }
 
 #[inline]
@@ -53,7 +48,6 @@ impl StrideExplainer {
             bases: Mat::zeros(0, 0),
             weights: Mat::zeros(0, 0),
             offsets: Col::zeros(0),
-            is_fitted: false,
         }
     }
 
@@ -73,8 +67,9 @@ impl StrideExplainer {
         let mut z_stacked = Mat::<f32>::zeros(n, total_dim);
         self.bases = Mat::<f32>::zeros(self.num_bases, num_features);
         let mut means = Mat::<f32>::zeros(self.num_bases, num_features);
+
         // Nystrom approximation
-        let workspace: Vec<NystromWorkspace> = z_stacked
+        let projections: Vec<Mat<f32>> = z_stacked
             .par_col_partition_mut(num_features)
             .zip(self.bases.par_col_partition_mut(num_features))
             .zip(means.par_col_partition_mut(num_features))
@@ -132,8 +127,8 @@ impl StrideExplainer {
                     let val = eig.S()[d];
                     inv_s[(d, d)] = if val > 1e-10 { 1.0 / val.sqrt() } else { 0.0 };
                 }
-                let proj = eig.U() * &inv_s;
-                let mut z_features = &k_nm * &proj;
+                let projection = eig.U() * &inv_s;
+                let mut z_features = &k_nm * &projection;
 
                 let mut mean = mean_col.col_mut(0);
                 for j in 0..self.num_bases {
@@ -149,7 +144,8 @@ impl StrideExplainer {
                     }
                 }
                 z_block.copy_from(&z_features);
-                NystromWorkspace { proj }
+
+                projection
             })
             .collect();
 
@@ -164,21 +160,14 @@ impl StrideExplainer {
         self.weights = Mat::zeros(self.num_bases, num_features);
         self.offsets = Col::zeros(num_features);
 
-        for (f_idx, (ws, mean)) in workspace
-            .iter()
-            .zip(means.col_iter())
-            .enumerate()
-            .take(num_features)
-        {
+        for (f_idx, (projection, mean)) in projections.iter().zip(means.col_iter()).enumerate() {
             let start = f_idx * self.num_bases;
             let coeff = alpha_total.as_ref().subrows(start, self.num_bases);
-            let weight = &ws.proj * coeff;
+            let weight = projection * coeff;
             self.weights.col_mut(f_idx).copy_from(weight);
             self.offsets[f_idx] = mean.transpose() * coeff;
         }
-
         self.base_value = base_value;
-        self.is_fitted = true;
     }
 
     pub fn predict(&self, x: MatRef<'_, f32>) -> Col<f32> {
