@@ -18,6 +18,12 @@ pub struct StrideExplainer {
     pub is_fitted: bool,
 }
 
+struct ParamWorkspace {
+    bases: Vec<f32>,
+    proj: Mat<f32>,
+    mean: Col<f32>,
+}
+
 impl StrideExplainer {
     pub fn new(num_bases: usize, lambda: f32, sigma: f32) -> Self {
         Self {
@@ -39,10 +45,14 @@ impl StrideExplainer {
         let target_centered = pred - Col::<f32>::full(n, base_value);
         let s2_inv = 0.5 / (self.sigma * self.sigma);
 
+        let total_dim = num_features * self.num_bases;
+        let mut z_stacked = Mat::<f32>::zeros(n, total_dim);
+
         // Nystrom approximation
-        let params: Vec<_> = (0..num_features)
-            .into_par_iter()
-            .map(|f_idx| {
+        let workspace: Vec<ParamWorkspace> = z_stacked
+            .par_col_partition_mut(num_features)
+            .enumerate()
+            .map(|(f_idx, mut z_block)| {
                 let mut rng = rng();
                 let mut valid_indices: Vec<usize> =
                     (0..n).filter(|&i| !x[(i, f_idx)].is_nan()).collect();
@@ -111,21 +121,16 @@ impl StrideExplainer {
                         }
                     }
                 }
-                (bases, proj_matrix, z_features, z_col_means)
+                z_block.copy_from(&z_features);
+                ParamWorkspace {
+                    bases: bases,
+                    proj: proj_matrix,
+                    mean: z_col_means,
+                }
             })
             .collect();
 
         // Global Ridge Regression
-        let total_dim = num_features * self.num_bases;
-        let mut z_stacked = Mat::<f32>::zeros(n, total_dim);
-        for (f_idx, (_, _, z, _)) in params.iter().enumerate() {
-            let offset = f_idx * self.num_bases;
-            z_stacked
-                .as_mut()
-                .submatrix_mut(0, offset, n, self.num_bases)
-                .copy_from(z);
-        }
-
         let mut ridge_lhs = z_stacked.transpose() * &z_stacked;
         for i in 0..total_dim {
             ridge_lhs[(i, i)] += self.lambda;
@@ -137,19 +142,19 @@ impl StrideExplainer {
         self.feature_weights = Vec::with_capacity(num_features);
         self.feature_offsets = Vec::with_capacity(num_features);
 
-        for (f_idx, (bases, proj, _, mean)) in params.iter().enumerate().take(num_features) {
+        for (f_idx, ws) in workspace.iter().enumerate().take(num_features) {
             let start = f_idx * self.num_bases;
             let coeff = alpha_total.as_ref().subrows(start, self.num_bases);
 
-            let w_col = proj * coeff; // W = P * alpha
+            let w_col = &ws.proj * coeff; // W = P * alpha
             let w_vec: Vec<f32> = (0..self.num_bases).map(|j| w_col[j]).collect();
 
             let mut c = 0.0;
             for j in 0..self.num_bases {
-                c += mean[j] * coeff[j]; // C = mean * alpha
+                c += &ws.mean[j] * coeff[j]; // C = mean * alpha
             }
 
-            self.feature_bases.push(bases.to_owned());
+            self.feature_bases.push(ws.bases.to_owned());
             self.feature_weights.push(w_vec);
             self.feature_offsets.push(c);
         }
