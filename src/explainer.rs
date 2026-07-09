@@ -30,6 +30,8 @@ fn evaluate_feature(
     offset: f32,
     s2_inv: f32,
 ) -> f32 {
+    // Computes the contribution of a single feature:
+    // f_j(x) = k(x, B_j)^T w_j - b_j
     let mut sum = 0.0;
     for (base, weight) in bases.iter().zip(weights.iter()) {
         sum += rbf_kernel(x - *base, s2_inv) * *weight;
@@ -121,6 +123,7 @@ impl StrideExplainer {
                     }
                 }
 
+                // Compute the projection matrix from the eigen decomposition of K_mm.
                 let eig = k_mm.self_adjoint_eigen(faer::Side::Lower).unwrap();
                 let mut inv_s = Mat::<f32>::zeros(self.num_bases, self.num_bases);
                 for d in 0..self.num_bases {
@@ -130,6 +133,7 @@ impl StrideExplainer {
                 let projection = eig.U() * &inv_s;
                 let mut z_features = &k_nm * &projection;
 
+                // Center the z_features around zero.
                 let mut mean = mean_col.col_mut(0);
                 for j in 0..self.num_bases {
                     let mean_val = z_features.col(j).iter().sum::<f32>() / n as f32;
@@ -155,17 +159,22 @@ impl StrideExplainer {
             ridge_lhs[(i, i)] += self.lambda;
         }
         let rhs = z_stacked.transpose() * &target_centered;
-        let alpha_total = ridge_lhs.ldlt(faer::Side::Lower).unwrap().solve(&rhs);
+        let coefficient_stack = ridge_lhs.ldlt(faer::Side::Lower).unwrap().solve(&rhs);
 
+        // Convert the learned coefficients back to kernel-space weights and centering offsets.
         self.weights = Mat::zeros(self.num_bases, num_features);
         self.offsets = Col::zeros(num_features);
 
         for (f_idx, (projection, mean)) in projections.iter().zip(means.col_iter()).enumerate() {
             let start = f_idx * self.num_bases;
-            let coeff = alpha_total.as_ref().subrows(start, self.num_bases);
-            let weight = projection * coeff;
+            let coefficient = coefficient_stack.as_ref().subrows(start, self.num_bases);
+
+            // w_j = P_j coefficient
+            let weight = projection * coefficient;
             self.weights.col_mut(f_idx).copy_from(weight);
-            self.offsets[f_idx] = mean.transpose() * coeff;
+
+            // b_j = mu_j^T coefficient
+            self.offsets[f_idx] = mean.transpose() * coefficient;
         }
         self.base_value = base_value;
     }
