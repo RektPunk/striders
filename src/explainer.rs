@@ -1,7 +1,6 @@
 use faer::prelude::Solve;
 use faer::{Col, ColRef, Mat, MatRef};
-use rand::rng;
-use rand::seq::SliceRandom;
+use rand::RngExt;
 use rayon::prelude::*;
 
 pub struct StrideExplainer {
@@ -75,46 +74,50 @@ impl StrideExplainer {
             .par_col_partition_mut(num_features)
             .zip(self.bases.par_col_partition_mut(num_features))
             .zip(means.par_col_partition_mut(num_features))
+            .zip(x.par_col_partition(num_features))
             .enumerate()
-            .map(|(f_idx, ((mut z_block, base_col), mean_col))| {
-                let mut rng = rng();
+            .map(|(f_idx, (((mut z_block, base_col), mean_col), x_col))| {
+                let x_col = x_col.col(0);
+                let mut rng = rand::rng();
+
                 let mut valid_indices: Vec<usize> =
-                    (0..n).filter(|&i| !x[(i, f_idx)].is_nan()).collect();
+                    (0..n).filter(|&i| !x_col[i].is_nan()).collect();
 
-                if valid_indices.is_empty() {
-                    panic!(
-                        "Feature at index {} consists entirely of NaNs. \
-                        Please remove constant or empty columns before fitting.",
-                        f_idx
-                    );
+                assert!(
+                    valid_indices.len() >= self.num_bases,
+                    "Feature {} has only {} valid samples but num_bases={}",
+                    f_idx,
+                    valid_indices.len(),
+                    self.num_bases,
+                );
+
+                let num_landmarks = self.num_bases.min(valid_indices.len());
+                for i in 0..num_landmarks {
+                    let j = rng.random_range(i..valid_indices.len());
+                    valid_indices.swap(i, j);
                 }
-
-                valid_indices.shuffle(&mut rng);
-                let landmark_indices = &valid_indices[..self.num_bases.min(valid_indices.len())];
-
+                let landmark_indices = &valid_indices[..num_landmarks];
                 let mut basis = base_col.col_mut(0);
                 for (j_idx, &row_idx) in landmark_indices.iter().enumerate() {
-                    basis[j_idx] = x[(row_idx, f_idx)];
+                    basis[j_idx] = x_col[row_idx];
                 }
 
                 // K_nm (N x m)
                 let mut k_nm = Mat::<f32>::zeros(n, self.num_bases);
                 for j in 0..self.num_bases {
                     let base_val = basis[j];
-                    for i in 0..n {
-                        let x_val = x[(i, f_idx)];
-                        if !x_val.is_nan() {
-                            let diff = x_val - base_val;
-                            k_nm[(i, j)] = rbf_kernel(diff, s2_inv);
-                        }
+                    for &i in &valid_indices {
+                        let diff = x_col[i] - base_val;
+                        k_nm[(i, j)] = rbf_kernel(diff, s2_inv);
                     }
                 }
 
                 // K_mm (m x m)
                 let mut k_mm = Mat::<f32>::zeros(self.num_bases, self.num_bases);
                 for j in 0..self.num_bases {
+                    let bj = basis[j];
                     for i in 0..=j {
-                        let diff = basis[i] - basis[j];
+                        let diff = basis[i] - bj;
                         let val = rbf_kernel(diff, s2_inv);
                         k_mm[(i, j)] = val;
                         if i != j {
@@ -140,7 +143,7 @@ impl StrideExplainer {
                     mean[j] = mean_val;
 
                     for i in 0..n {
-                        if !x[(i, f_idx)].is_nan() {
+                        if !x_col[i].is_nan() {
                             z_features[(i, j)] -= mean_val;
                         } else {
                             z_features[(i, j)] = 0.0;
