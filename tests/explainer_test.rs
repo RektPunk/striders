@@ -68,7 +68,7 @@ fn test_stride_explainer() {
 }
 
 #[test]
-#[should_panic(expected = "consists entirely of NaNs")]
+#[should_panic(expected = "Feature 1 has only 0 valid samples but num_bases=16")]
 fn test_explain_all_nans_panic() {
     let n_samples = 50;
     let n_features = 2;

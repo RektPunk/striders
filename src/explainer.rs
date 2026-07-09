@@ -141,13 +141,8 @@ impl StrideExplainer {
                 for j in 0..self.num_bases {
                     let mean_val = z_features.col(j).iter().sum::<f32>() / n as f32;
                     mean[j] = mean_val;
-
-                    for i in 0..n {
-                        if !x_col[i].is_nan() {
-                            z_features[(i, j)] -= mean_val;
-                        } else {
-                            z_features[(i, j)] = 0.0;
-                        }
+                    for &i in &valid_indices {
+                        z_features[(i, j)] -= mean_val;
                     }
                 }
                 z_block.copy_from(&z_features);
