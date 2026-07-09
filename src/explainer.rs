@@ -74,10 +74,9 @@ impl StrideExplainer {
             .par_col_partition_mut(num_features)
             .zip(self.bases.par_col_partition_mut(num_features))
             .zip(means.par_col_partition_mut(num_features))
-            .zip(x.par_col_partition(num_features))
             .enumerate()
-            .map(|(f_idx, (((mut z_block, base_col), mean_col), x_col))| {
-                let x_col = x_col.col(0);
+            .map(|(f_idx, ((mut z_block, base_col), mean_col))| {
+                let x_col = x.col(f_idx);
                 let mut rng = rand::rng();
 
                 let mut valid_indices: Vec<usize> =
@@ -90,13 +89,11 @@ impl StrideExplainer {
                     valid_indices.len(),
                     self.num_bases,
                 );
-
-                let num_landmarks = self.num_bases.min(valid_indices.len());
-                for i in 0..num_landmarks {
+                for i in 0..self.num_bases {
                     let j = rng.random_range(i..valid_indices.len());
                     valid_indices.swap(i, j);
                 }
-                let landmark_indices = &valid_indices[..num_landmarks];
+                let landmark_indices = &valid_indices[..self.num_bases];
                 let mut basis = base_col.col_mut(0);
                 for (j_idx, &row_idx) in landmark_indices.iter().enumerate() {
                     basis[j_idx] = x_col[row_idx];
@@ -128,12 +125,18 @@ impl StrideExplainer {
 
                 // Compute the projection matrix from the eigen decomposition of K_mm.
                 let eig = k_mm.self_adjoint_eigen(faer::Side::Lower).unwrap();
-                let mut inv_s = Mat::<f32>::zeros(self.num_bases, self.num_bases);
-                for d in 0..self.num_bases {
-                    let val = eig.S()[d];
-                    inv_s[(d, d)] = if val > 1e-10 { 1.0 / val.sqrt() } else { 0.0 };
+                let mut projection = eig.U().to_owned();
+                for p_idx in 0..self.num_bases {
+                    let val = eig.S()[p_idx];
+                    let inv_sqrt_s = if val > f32::EPSILON {
+                        1.0 / val.sqrt()
+                    } else {
+                        0.0
+                    };
+                    for b_idx in 0..self.num_bases {
+                        projection[(b_idx, p_idx)] *= inv_sqrt_s;
+                    }
                 }
-                let projection = eig.U() * &inv_s;
                 let mut z_features = &k_nm * &projection;
 
                 // Center the z_features around zero.
@@ -184,7 +187,6 @@ impl StrideExplainer {
 
         let mut predictions = Col::<f32>::full(n_samples, self.base_value);
         predictions
-            .as_mut()
             .par_iter_mut()
             .enumerate()
             .for_each(|(i, pred_val)| {
@@ -211,7 +213,6 @@ impl StrideExplainer {
 
         let mut contributions = Mat::<f32>::zeros(n_samples, n_features);
         contributions
-            .as_mut()
             .par_col_partition_mut(n_features)
             .enumerate()
             .for_each(|(f_idx, mut contribs)| {
