@@ -28,9 +28,8 @@ fn test_stride_explainer() {
     let mut explainer = StrideExplainer::new(num_bases, lambda, sigma);
     explainer.fit(x.as_ref(), y.as_ref());
 
-    assert!(explainer.is_fitted, "Model should be fitted successfully");
-
-    let (y_pred, contributions) = explainer.explain(x.as_ref());
+    let y_pred = explainer.predict(x.as_ref());
+    let contributions = explainer.explain(x.as_ref());
 
     assert_eq!(
         contributions.nrows(),
@@ -107,7 +106,8 @@ fn test_explain_single_sample() {
     x_single[(0, 0)] = 5.5;
     x_single[(0, 1)] = -0.3;
 
-    let (y_pred, contributions) = explainer.explain(x_single.as_ref());
+    let y_pred = explainer.predict(x_single.as_ref());
+    let contributions = explainer.explain(x_single.as_ref());
 
     assert_eq!(
         y_pred.nrows(),
