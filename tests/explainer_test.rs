@@ -8,7 +8,6 @@ fn test_stride_explainer() {
     let n_features = 3;
     let num_bases = 32;
     let lambda: f32 = 0.01;
-    let sigma: f32 = 1.0;
 
     let mut x = Mat::<f32>::zeros(n_samples, n_features);
     let mut y = Col::<f32>::zeros(n_samples);
@@ -25,7 +24,7 @@ fn test_stride_explainer() {
         y[r_idx] = 3.5 * v1 - 2.0 * v2_clean + 0.8 * v3 + 10.0;
     }
 
-    let mut explainer = StrideExplainer::new(num_bases, lambda, sigma);
+    let mut explainer = StrideExplainer::new(num_bases, lambda);
     explainer.fit(x.as_ref(), y.as_ref());
 
     let y_pred = explainer.predict(x.as_ref());
@@ -81,7 +80,7 @@ fn test_explain_all_nans_panic() {
         x[(r_idx, 1)] = f32::NAN;
     }
 
-    let mut explainer = StrideExplainer::new(16, 0.01, 1.0);
+    let mut explainer = StrideExplainer::new(16, 0.01);
     explainer.fit(x.as_ref(), y.as_ref());
 }
 
@@ -99,7 +98,7 @@ fn test_explain_single_sample() {
         y_train[r_idx] = x_train[(r_idx, 0)] + x_train[(r_idx, 1)];
     }
 
-    let mut explainer = StrideExplainer::new(16, 0.01, 1.0);
+    let mut explainer = StrideExplainer::new(16, 0.01);
     explainer.fit(x_train.as_ref(), y_train.as_ref());
 
     let mut x_single = Mat::<f32>::zeros(1, n_features);

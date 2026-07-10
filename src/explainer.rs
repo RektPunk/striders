@@ -7,13 +7,13 @@ pub struct StrideExplainer {
     // Hyperparameters
     pub num_bases: usize,
     pub lambda: f32,
-    pub sigma: f32,
 
     // Learned Parameters
     pub base_value: f32,
     pub bases: Mat<f32>,
     pub weights: Mat<f32>,
     pub offsets: Col<f32>,
+    pub s2_inv: Vec<f32>,
 }
 
 #[inline]
@@ -40,21 +40,16 @@ fn evaluate_feature(
 }
 
 impl StrideExplainer {
-    pub fn new(num_bases: usize, lambda: f32, sigma: f32) -> Self {
+    pub fn new(num_bases: usize, lambda: f32) -> Self {
         Self {
             num_bases,
             lambda,
-            sigma,
             base_value: 0.0,
             bases: Mat::zeros(0, 0),
             weights: Mat::zeros(0, 0),
             offsets: Col::zeros(0),
+            s2_inv: Vec::new(),
         }
-    }
-
-    #[inline]
-    fn kernel_scale(&self) -> f32 {
-        0.5 / (self.sigma * self.sigma)
     }
 
     pub fn fit(&mut self, x: MatRef<'_, f32>, pred: ColRef<'_, f32>) {
@@ -62,7 +57,6 @@ impl StrideExplainer {
         let num_features = x.ncols();
         let base_value = pred.iter().sum::<f32>() / n as f32;
         let target_centered = pred - Col::<f32>::full(n, base_value);
-        let s2_inv = self.kernel_scale();
 
         let total_dim = num_features * self.num_bases;
         let mut z_stacked = Mat::<f32>::zeros(n, total_dim);
@@ -70,7 +64,7 @@ impl StrideExplainer {
         let mut means = Mat::<f32>::zeros(self.num_bases, num_features);
 
         // Nystrom approximation
-        let projections: Vec<Mat<f32>> = z_stacked
+        let (projections, s2_invs): (Vec<Mat<f32>>, Vec<f32>) = z_stacked
             .par_col_partition_mut(num_features)
             .zip(self.bases.par_col_partition_mut(num_features))
             .zip(means.par_col_partition_mut(num_features))
@@ -78,7 +72,6 @@ impl StrideExplainer {
             .map(|(f_idx, ((mut z_block, base_col), mean_col))| {
                 let x_col = x.col(f_idx);
                 let mut rng = rand::rng();
-
                 let mut valid_indices: Vec<usize> =
                     (0..n).filter(|&i| !x_col[i].is_nan()).collect();
 
@@ -98,6 +91,19 @@ impl StrideExplainer {
                 for (j_idx, &row_idx) in landmark_indices.iter().enumerate() {
                     basis[j_idx] = x_col[row_idx];
                 }
+
+                let s2_inv = {
+                    let mean = basis.as_ref().iter().sum::<f32>() / self.num_bases as f32;
+                    let variance = basis
+                        .as_ref()
+                        .iter()
+                        .map(|&x| (x - mean).powi(2))
+                        .sum::<f32>()
+                        / (self.num_bases as f32 - 1.0).max(1.0);
+                    let sigma = variance.sqrt();
+
+                    1.0 / (2.0 * (sigma.max(1e-4)).powi(2))
+                };
 
                 // K_nm (N x m)
                 let mut k_nm = Mat::<f32>::zeros(n, self.num_bases);
@@ -150,7 +156,7 @@ impl StrideExplainer {
                 }
                 z_block.copy_from(&z_features);
 
-                projection
+                (projection, s2_inv)
             })
             .collect();
 
@@ -177,14 +183,14 @@ impl StrideExplainer {
             // b_j = mu_j^T coefficient
             self.offsets[f_idx] = mean.transpose() * coefficient;
         }
+
+        self.s2_inv = s2_invs;
         self.base_value = base_value;
     }
 
     pub fn predict(&self, x: MatRef<'_, f32>) -> Col<f32> {
         let n_samples = x.nrows();
         let n_features = x.ncols();
-        let s2_inv = self.kernel_scale();
-
         let mut predictions = Col::<f32>::full(n_samples, self.base_value);
         predictions
             .par_iter_mut()
@@ -195,6 +201,7 @@ impl StrideExplainer {
                     let basis = self.bases.col(f_idx);
                     let weight = self.weights.col(f_idx);
                     let offset = self.offsets[f_idx];
+                    let s2_inv = self.s2_inv[f_idx];
                     let x_val = x[(i, f_idx)];
                     if !x_val.is_nan() {
                         sample_sum += evaluate_feature(x_val, basis, weight, offset, s2_inv);
@@ -209,7 +216,6 @@ impl StrideExplainer {
     pub fn explain(&self, x: MatRef<f32>) -> Mat<f32> {
         let n_samples = x.nrows();
         let n_features = x.ncols();
-        let s2_inv = self.kernel_scale();
 
         let mut contributions = Mat::<f32>::zeros(n_samples, n_features);
         contributions
@@ -219,6 +225,7 @@ impl StrideExplainer {
                 let basis = self.bases.col(f_idx);
                 let weight = self.weights.col(f_idx);
                 let offset = self.offsets[f_idx];
+                let s2_inv = self.s2_inv[f_idx];
                 for i in 0..n_samples {
                     let x_val = x[(i, f_idx)];
                     if x_val.is_nan() {
