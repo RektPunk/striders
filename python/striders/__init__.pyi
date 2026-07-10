@@ -2,7 +2,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 class Striders:
-    def __init__(self, num_bases: int, lambda_reg: float, sigma: float):
+    def __init__(self, num_bases: int, lambda_reg: float):
         pass
     def fit(self, x: NDArray[np.float32], pred: NDArray[np.float32]):
         pass

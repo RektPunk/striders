@@ -81,10 +81,10 @@ pub struct Striders {
 #[pymethods]
 impl Striders {
     #[new]
-    #[pyo3(signature = (num_bases=50, lambda_reg=0.01, sigma=0.5))]
-    pub fn pynew(num_bases: usize, lambda_reg: f32, sigma: f32) -> Self {
+    #[pyo3(signature = (num_bases=50, lambda_reg=0.01))]
+    pub fn pynew(num_bases: usize, lambda_reg: f32) -> Self {
         Self {
-            inner: StrideExplainer::new(num_bases, lambda_reg, sigma),
+            inner: StrideExplainer::new(num_bases, lambda_reg),
         }
     }
 
