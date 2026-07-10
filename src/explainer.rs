@@ -3,6 +3,14 @@ use faer::{Col, ColRef, Mat, MatRef};
 use rand::RngExt;
 use rayon::prelude::*;
 
+struct NystromResult {
+    pub z_stacked: Mat<f32>,
+    pub z_means: Mat<f32>,
+    pub projections: Vec<Mat<f32>>,
+    pub bases: Mat<f32>,
+    pub s2_invs: Vec<f32>,
+}
+
 pub struct StrideExplainer {
     // Hyperparameters
     pub num_bases: usize,
@@ -52,10 +60,7 @@ impl StrideExplainer {
             s2_inv: Vec::new(),
         }
     }
-    fn nystrom_approximate(
-        &mut self,
-        x: MatRef<'_, f32>,
-    ) -> (Mat<f32>, Mat<f32>, Vec<Mat<f32>>, Mat<f32>, Vec<f32>) {
+    fn nystrom_approximate(&mut self, x: MatRef<'_, f32>) -> NystromResult {
         let num_samples = x.nrows();
         let num_features = x.ncols();
         let num_bases = self.num_bases;
@@ -156,11 +161,24 @@ impl StrideExplainer {
             })
             .collect();
 
-        (z_stacked, z_means, projections, bases, s2_invs)
+        NystromResult {
+            z_stacked,
+            z_means,
+            projections,
+            bases,
+            s2_invs,
+        }
     }
 
     pub fn fit(&mut self, x: MatRef<'_, f32>, pred: ColRef<'_, f32>) {
-        let (z_stacked, z_means, projections, bases, s2_invs) = self.nystrom_approximate(x);
+        let NystromResult {
+            z_stacked,
+            z_means,
+            projections,
+            bases,
+            s2_invs,
+        } = self.nystrom_approximate(x);
+
         let num_samples = x.nrows();
         let num_features = x.ncols();
         let num_bases = self.num_bases;
