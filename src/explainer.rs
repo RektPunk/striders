@@ -8,9 +8,11 @@ pub struct StrideExplainer {
     pub num_bases: usize,
     pub lambda: f32,
 
+    // Selected bases
+    pub bases: Mat<f32>,
+
     // Learned Parameters
     pub base_value: f32,
-    pub bases: Mat<f32>,
     pub weights: Mat<f32>,
     pub offsets: Col<f32>,
     pub s2_inv: Vec<f32>,
@@ -29,8 +31,7 @@ fn evaluate_feature(
     offset: f32,
     s2_inv: f32,
 ) -> f32 {
-    // Computes the contribution of a single feature:
-    // f_j(x) = k(x, B_j)^T w_j - b_j
+    // Computes the contribution of a single feature: k(x, B_j)^T w_j - b_j
     let mut sum = 0.0;
     for (base, weight) in bases.iter().zip(weights.iter()) {
         sum += rbf_kernel(x - *base, s2_inv) * *weight;
@@ -44,70 +45,68 @@ impl StrideExplainer {
         Self {
             num_bases,
             lambda,
-            base_value: 0.0,
             bases: Mat::zeros(0, 0),
+            base_value: 0.0,
             weights: Mat::zeros(0, 0),
             offsets: Col::zeros(0),
             s2_inv: Vec::new(),
         }
     }
-
-    pub fn fit(&mut self, x: MatRef<'_, f32>, pred: ColRef<'_, f32>) {
-        let n = x.nrows();
+    fn nystrom_approximate(
+        &mut self,
+        x: MatRef<'_, f32>,
+    ) -> (Mat<f32>, Mat<f32>, Vec<Mat<f32>>, Mat<f32>, Vec<f32>) {
+        let num_samples = x.nrows();
         let num_features = x.ncols();
-        let base_value = pred.iter().sum::<f32>() / n as f32;
-        let target_centered = pred - Col::<f32>::full(n, base_value);
-
-        let total_dim = num_features * self.num_bases;
-        let mut z_stacked = Mat::<f32>::zeros(n, total_dim);
-        self.bases = Mat::<f32>::zeros(self.num_bases, num_features);
-        let mut means = Mat::<f32>::zeros(self.num_bases, num_features);
+        let num_bases = self.num_bases;
+        let mut z_stacked = Mat::<f32>::zeros(num_samples, num_features * num_bases);
+        let mut bases = Mat::<f32>::zeros(num_bases, num_features);
+        let mut z_means = Mat::<f32>::zeros(num_bases, num_features);
 
         // Nystrom approximation
         let (projections, s2_invs): (Vec<Mat<f32>>, Vec<f32>) = z_stacked
             .par_col_partition_mut(num_features)
-            .zip(self.bases.par_col_partition_mut(num_features))
-            .zip(means.par_col_partition_mut(num_features))
+            .zip(bases.par_col_partition_mut(num_features))
+            .zip(z_means.par_col_partition_mut(num_features))
             .enumerate()
             .map(|(f_idx, ((mut z_block, base_col), mean_col))| {
                 let x_col = x.col(f_idx);
                 let mut rng = rand::rng();
                 let mut valid_indices: Vec<usize> =
-                    (0..n).filter(|&i| !x_col[i].is_nan()).collect();
+                    (0..num_samples).filter(|&i| !x_col[i].is_nan()).collect();
 
                 assert!(
-                    valid_indices.len() >= self.num_bases,
+                    valid_indices.len() >= num_bases,
                     "Feature {} has only {} valid samples but num_bases={}",
                     f_idx,
                     valid_indices.len(),
-                    self.num_bases,
+                    num_bases,
                 );
-                for i in 0..self.num_bases {
+                for i in 0..num_bases {
                     let j = rng.random_range(i..valid_indices.len());
                     valid_indices.swap(i, j);
                 }
-                let landmark_indices = &valid_indices[..self.num_bases];
+                let landmark_indices = &valid_indices[..num_bases];
                 let mut basis = base_col.col_mut(0);
                 for (j_idx, &row_idx) in landmark_indices.iter().enumerate() {
                     basis[j_idx] = x_col[row_idx];
                 }
 
                 let s2_inv = {
-                    let mean = basis.as_ref().iter().sum::<f32>() / self.num_bases as f32;
+                    let mean = basis.as_ref().iter().sum::<f32>() / num_bases as f32;
                     let variance = basis
                         .as_ref()
                         .iter()
                         .map(|&x| (x - mean).powi(2))
                         .sum::<f32>()
-                        / (self.num_bases as f32 - 1.0).max(1.0);
+                        / (num_bases as f32 - 1.0).max(1.0);
                     let sigma = variance.sqrt();
 
                     1.0 / (2.0 * (sigma.max(1e-4)).powi(2))
                 };
 
-                // K_nm (N x m)
-                let mut k_nm = Mat::<f32>::zeros(n, self.num_bases);
-                for j in 0..self.num_bases {
+                let mut k_nm = Mat::<f32>::zeros(num_samples, num_bases);
+                for j in 0..num_bases {
                     let base_val = basis[j];
                     for &i in &valid_indices {
                         let diff = x_col[i] - base_val;
@@ -115,9 +114,8 @@ impl StrideExplainer {
                     }
                 }
 
-                // K_mm (m x m)
-                let mut k_mm = Mat::<f32>::zeros(self.num_bases, self.num_bases);
-                for j in 0..self.num_bases {
+                let mut k_mm = Mat::<f32>::zeros(num_bases, num_bases);
+                for j in 0..num_bases {
                     let bj = basis[j];
                     for i in 0..=j {
                         let diff = basis[i] - bj;
@@ -129,17 +127,16 @@ impl StrideExplainer {
                     }
                 }
 
-                // Compute the projection matrix from the eigen decomposition of K_mm.
                 let eig = k_mm.self_adjoint_eigen(faer::Side::Lower).unwrap();
                 let mut projection = eig.U().to_owned();
-                for p_idx in 0..self.num_bases {
+                for p_idx in 0..num_bases {
                     let val = eig.S()[p_idx];
                     let inv_sqrt_s = if val > f32::EPSILON {
                         1.0 / val.sqrt()
                     } else {
                         0.0
                     };
-                    for b_idx in 0..self.num_bases {
+                    for b_idx in 0..num_bases {
                         projection[(b_idx, p_idx)] *= inv_sqrt_s;
                     }
                 }
@@ -147,18 +144,30 @@ impl StrideExplainer {
 
                 // Center the z_features around zero.
                 let mut mean = mean_col.col_mut(0);
-                for j in 0..self.num_bases {
-                    let mean_val = z_features.col(j).iter().sum::<f32>() / n as f32;
+                for j in 0..num_bases {
+                    let mean_val = z_features.col(j).iter().sum::<f32>() / num_samples as f32;
                     mean[j] = mean_val;
                     for &i in &valid_indices {
                         z_features[(i, j)] -= mean_val;
                     }
                 }
                 z_block.copy_from(&z_features);
-
                 (projection, s2_inv)
             })
             .collect();
+
+        (z_stacked, z_means, projections, bases, s2_invs)
+    }
+
+    pub fn fit(&mut self, x: MatRef<'_, f32>, pred: ColRef<'_, f32>) {
+        let (z_stacked, z_means, projections, bases, s2_invs) = self.nystrom_approximate(x);
+        let num_samples = x.nrows();
+        let num_features = x.ncols();
+        let num_bases = self.num_bases;
+
+        self.base_value = pred.iter().sum::<f32>() / num_samples as f32;
+        let target_centered = pred - Col::<f32>::full(num_samples, self.base_value);
+        let total_dim = num_features * num_bases;
 
         // Global Ridge Regression
         let mut ridge_lhs = z_stacked.transpose() * &z_stacked;
@@ -169,23 +178,24 @@ impl StrideExplainer {
         let coefficient_stack = ridge_lhs.ldlt(faer::Side::Lower).unwrap().solve(&rhs);
 
         // Convert the learned coefficients back to kernel-space weights and centering offsets.
-        self.weights = Mat::zeros(self.num_bases, num_features);
+        self.weights = Mat::zeros(num_bases, num_features);
         self.offsets = Col::zeros(num_features);
 
-        for (f_idx, (projection, mean)) in projections.iter().zip(means.col_iter()).enumerate() {
-            let start = f_idx * self.num_bases;
-            let coefficient = coefficient_stack.as_ref().subrows(start, self.num_bases);
+        for (f_idx, (projection, z_mean)) in projections.iter().zip(z_means.col_iter()).enumerate()
+        {
+            let start = f_idx * num_bases;
+            let coefficient = coefficient_stack.as_ref().subrows(start, num_bases);
 
             // w_j = P_j coefficient
             let weight = projection * coefficient;
             self.weights.col_mut(f_idx).copy_from(weight);
 
             // b_j = mu_j^T coefficient
-            self.offsets[f_idx] = mean.transpose() * coefficient;
+            self.offsets[f_idx] = z_mean.transpose() * coefficient;
         }
 
+        self.bases = bases;
         self.s2_inv = s2_invs;
-        self.base_value = base_value;
     }
 
     pub fn predict(&self, x: MatRef<'_, f32>) -> Col<f32> {
